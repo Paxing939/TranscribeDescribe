@@ -1,0 +1,29 @@
+[package]
+name = "callscribe-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+callscribe-core.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-registry.workspace = true
+windows = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_Media_Audio",
+  "Win32_Storage_FileSystem",
+  "Win32_Storage_Packaging_Appx",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_UI_Shell_PropertiesSystem",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+  "Win32_System_WindowsProgramming",
+  "Win32_UI_WindowsAndMessaging",
+] }

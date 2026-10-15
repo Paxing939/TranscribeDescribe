@@ -1,0 +1,7 @@
+/target/
+node_modules/
+/apps/tray/ui/dist/
+/apps/tray/src-tauri/gen/
+/apps/tray/src-tauri/binaries/
+/apps/tray/src-tauri/runtime/
+/third_party/sherpa-onnx-lib/

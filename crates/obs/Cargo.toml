@@ -1,0 +1,16 @@
+[package]
+name = "callscribe-obs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+callscribe-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true }
+obws = { version = "0.15", features = ["events"] }
+futures-util = "0.3"

@@ -1,0 +1,215 @@
+[general]
+calls_dir = "~/Videos/Calls"        # корень хранения звонков; ~ — папка пользователя
+user_name = "Илья"                  # подпись для «Я» в саммари
+language = "ru"                     # язык звонков: ru | en | auto
+autostart = true
+
+[detection]
+enabled = true
+poll_interval_sec = 2
+start_debounce_sec = 3
+end_debounce_sec = 10
+silence_timeout_sec = 180
+silence_threshold_db = -50
+auto_stop_countdown_sec = 30
+prompt_timeout_sec = 30
+prompt_timeout_action = "ignore"    # ignore | record
+max_duration_min = 240
+default_mode = "ask"                # для неизвестных приложений: auto | ask | record_then_ask | ignore
+ignore_processes = ["obs64.exe", "obs", "callscribe*", "NVIDIA Broadcast.exe"]
+
+[detection.sources]
+window = true                       # окна и процессы встреч (F-11); микрофон не нужен
+mic = true                          # любое приложение заняло микрофон (F-10)
+
+[detection.process_sets]            # наборы процессов; в правилах на них ссылаются как "@имя"
+browsers = [
+  "chrome.exe", "msedge.exe", "firefox.exe", "browser.exe", "opera.exe", "brave.exe", "vivaldi.exe",
+  "chrome", "chromium", "google-chrome", "firefox", "yandex-browser",
+]
+
+# Правила: первое совпадение побеждает; process — glob по exe или package family name.
+# meeting_*: окна — по образцу pasrom/meeting-transcriber (macOS), процессы — из OpenWhispr; на Windows проверить (M4)
+[[detection.rules]]
+name = "Zoom"
+process = ["Zoom.exe", "zoom"]
+meeting_process = ["CptHost.exe"]
+meeting_window_regex = '^Zoom (Meeting|Webinar)$|.+\s*-\s*Zoom$'
+meeting_window_ignore_regex = '^(Zoom|Zoom Workplace|Home)$'
+mode = "ask"
+
+[[detection.rules]]
+name = "Teams"
+process = ["ms-teams.exe", "MSTeams_*", "Teams.exe", "teams-for-linux"]   # MSTeams_* — новый Teams в реестре микрофона
+meeting_process = ["ms-teams_modulehost.exe"]   # Microsoft отменяла это переименование — проверить на реальном звонке (M4)
+meeting_window_regex = '.+\s+\|\s+Microsoft Teams'
+# главное окно и разделы клиента; русские названия разделов — проверить
+meeting_window_ignore_regex = '^Microsoft Teams( \(work or school\))?$|^(Chat|Activity|Calendar|Teams|Files|Calls|People|Чат|Действия|Календарь|Команды|Файлы|Звонки|Люди) \|'
+mode = "ask"
+
+[[detection.rules]]
+name = "Webex"
+process = ["CiscoCollabHost.exe", "webex*"]
+meeting_process = ["webexmeetingsapp.exe"]
+meeting_window_regex = '.+\s*-\s*Webex$|^Meeting \||Personal Room'
+meeting_window_ignore_regex = '^(Webex|Cisco Webex Meetings)$'
+mode = "ask"
+
+[[detection.rules]]
+name = "Telegram"
+process = ["Telegram.exe", "*TelegramDesktop*", "telegram-desktop", "telegram"]
+mode = "ask"
+start_debounce_sec = 10             # не реагировать на голосовые сообщения
+
+[[detection.rules]]
+name = "Discord"
+process = ["Discord.exe", "discord"]
+mode = "ask"
+
+[[detection.rules]]
+name = "Slack"
+process = ["slack.exe", "slack"]
+mode = "ask"
+
+[[detection.rules]]
+name = "WhatsApp"
+process = ["*WhatsApp*"]
+mode = "ask"
+
+[[detection.rules]]
+name = "Google Meet"
+process = ["@browsers"]
+meeting_window_regex = '^Meet\s*[-–—]\s*\S'   # вкладка звонка «Meet – abc-defg-hij»; главная страница — «Google Meet»
+window_title_regex = '^Meet\s*[-–—]\s*\S'
+tag = "meet"
+mode = "ask"
+
+[[detection.rules]]
+name = "Звонок в браузере"
+process = ["@browsers"]
+window_title_regex = '(?i)(meet|zoom|teams|телемост|jitsi|толк|jazz|мтс линк|webex)'
+mode = "ask"
+
+[[detection.rules]]
+name = "Браузер"
+process = ["@browsers"]
+tag = "browser"
+mode = "ask"
+
+[obs]
+host = "127.0.0.1"
+port = 4455
+password = "auto"                   # auto — из конфига obs-websocket; keyring:<имя> — из хранилища
+exe_path = "C:/Program Files/obs-studio/bin/64bit/obs64.exe"
+launch_if_not_running = true
+launch_args = ["--minimize-to-tray", "--disable-shutdown-check"]
+screen_scenes = ["Call – Экран 1", "Call – Экран 2"]   # сцена на монитор, в каждой «Захват экрана» (F-28)
+audio_profile = "Call – Audio"      # профиль «только звук»: Custom FFmpeg → MKA, дорожки 1–3 (§14)
+default_record_mode = "audio"       # audio | screen — для mode = "auto" и как выбор по умолчанию в оверлее
+default_screen = 1
+override_record_dir = true          # писать в <calls_dir>/.incoming, потом вернуть исходную папку
+mic_input = "auto"                  # auto — GetSpecialInputs (mic1)
+desktop_input = "auto"              # auto — GetSpecialInputs (desktop1)
+tracks = { mix = 1, mic = 2, desktop = 3 }
+remux_to_mp4 = true
+
+[pipeline]
+mode = "local"                      # local | record_only | remote (§5.13)
+defer_during_recording = true
+keep_extracted_audio = false
+min_duration_sec = 30
+delete_short_recordings = "ask"     # ask | auto | never
+ffmpeg_dir = "auto"                 # auto — рядом с exe, затем PATH
+
+[pipeline.remote]                   # для mode = "remote"
+# outbox_dir = "//home-pc/calls-outbox"   # папка, общая с машиной-обработчиком (SMB, Syncthing…)
+audio_format = "flac"               # flac | wav
+include_video = false               # видео остаётся на этой машине (§9)
+cleanup_after_import = true
+
+[worker]                            # машина-обработчик: callscribe worker (§5.13)
+# inbox_dir = "D:/calls-inbox"      # та же папка, что pipeline.remote.outbox_dir на записывающей машине
+poll_interval_sec = 30
+claim_timeout_min = 120             # пакет упавшего обработчика снова свободен
+
+[transcription]
+engine = "whisper"                  # whisper | gigaam | parakeet (два последних — F-61)
+model_gpu = "large-v3-turbo"        # файл ggml-large-v3-turbo.bin в models_dir
+model_cpu = "medium"
+models_dir = "auto"                 # auto — %LOCALAPPDATA%\CallScribe\models (§11, п. 30)
+device = "auto"                     # auto | gpu | cpu; бэкенд GPU (Vulkan или CUDA) задаётся при сборке
+language = "ru"                     # auto — автоопределение
+beam_size = 5
+vad = true                          # Silero VAD, встроенный в whisper.cpp; модель скачивается в models_dir
+diarization = false                 # «Собеседник 1», «Собеседник 2»… (F-60, sherpa-onnx; модели скачиваются в models_dir)
+glossary = ["CI/CD", "GitHub Actions", "Kubernetes", "пайплайн", "деплой"]
+hallucination_blacklist = [         # regex, сравнение с текстом сегмента целиком
+  '(?i)^продолжение следует[.!…]*$',
+  '(?i)субтитр\w* (сделал|создавал|делал)',
+  '(?i)редактор субтитров',
+  '(?i)^спасибо за просмотр[.!]*$',
+  '(?i)^подпис\w+ на (наш )?канал',
+]
+merge_gap_sec = 1.5
+
+[transcription.echo_dedupe]
+enabled = true
+similarity = 85                     # 0–100
+max_offset_sec = 1.5
+
+[llm]
+provider = "ollama"                 # ollama | openai_compatible | anthropic | none
+base_url = "http://127.0.0.1:11434"
+model = "qwen2.5:7b"                # пример; под 8 ГБ VRAM — instruct-модель 7–9B в Q4 с хорошим русским
+# api_key = "keyring:<имя>"         # для облачных
+allow_cloud = false
+json_mode = "auto"                  # openai_compatible: auto | json_schema | json_object | none (F-72)
+extra_body = {}                     # openai_compatible: дополнительные поля запроса
+context_tokens = 16384
+max_output_tokens = 2048
+temperature = 0.2
+timeout_sec = 600
+keep_alive = 0                      # Ollama: выгрузить модель из памяти сразу после ответа
+# prompts_dir = "D:/callscribe/prompts"   # по умолчанию — встроенные промпты
+# провайдер для звонков «не отправлять в облако», если основной облачный (F-71):
+# local_fallback = { provider = "ollama", base_url = "http://127.0.0.1:11434", model = "qwen2.5:7b" }
+
+# Первый этап — DeepSeek. Это облако: транскрипт уходит на серверы DeepSeek.
+# Чтобы включить, замени значения этих ключей в [llm] выше (TOML не допускает повтора ключей и таблиц):
+#   provider = "openai_compatible"
+#   base_url = "https://api.deepseek.com"
+#   model = "deepseek-flash"          # ID моделей меняются — сверять с api-docs.deepseek.com (10.2026: deepseek-flash, deepseek-v4-pro)
+#   api_key = "keyring:deepseek"
+#   allow_cloud = true
+#   json_mode = "json_object"         # json_schema DeepSeek не поддерживает
+#   extra_body = { thinking = { type = "disabled" } }
+#   context_tokens = 131072           # у модели 1M; 128K хватает на многочасовой звонок
+#   local_fallback = { provider = "ollama", base_url = "http://127.0.0.1:11434", model = "qwen2.5:7b" }
+
+[naming]
+template = "{date}_{time}_{app}_{title}"
+date_format = "%Y-%m-%d"            # синтаксис strftime (chrono)
+time_format = "%H-%M"
+slugify = true                      # пробелы → «-», нижний регистр
+transliterate = false
+max_title_len = 60
+auto_apply_after_min = 10
+
+[overlay]
+position = "bottom-right"           # top-left | top-right | bottom-left | bottom-right
+recording_pill = "full"             # full | dot | hidden
+exclude_from_capture = true
+remind_consent = false
+
+[hotkeys]                           # формат tauri-plugin-global-shortcut
+toggle_recording = "Ctrl+Alt+R"
+bookmark = "Ctrl+Alt+M"
+pause = "Ctrl+Alt+P"
+
+[storage]
+min_free_gb = 5
+# delete_video_after_days = 90
+
+[hooks]
+# on_complete_webhook = "http://127.0.0.1:8080/callscribe"
+# on_complete_command = 'powershell -File C:/scripts/notify.ps1 "{call_dir}"'

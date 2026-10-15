@@ -1,0 +1,61 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/core",
+  "crates/media",
+  "crates/stt-whisper",
+  "crates/stt-sherpa",
+  "crates/obs",
+  "crates/platform",
+  "apps/cli",
+  "apps/tray/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+callscribe-core = { path = "crates/core" }
+callscribe-media = { path = "crates/media" }
+callscribe-stt-whisper = { path = "crates/stt-whisper" }
+callscribe-stt-sherpa = { path = "crates/stt-sherpa" }
+callscribe-obs = { path = "crates/obs" }
+callscribe-platform = { path = "crates/platform" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+toml_edit = "0.23"
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+globset = "0.4"
+uuid = { version = "1", features = ["v4", "serde"] }
+sha2 = "0.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process", "fs"] }
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+directories = "6"
+hound = "3"
+rapidfuzz = "0.5"
+deunicode = "1"
+clap = { version = "4", features = ["derive"] }
+keyring = { version = "3", features = ["windows-native"] }
+windows = "0.61"
+windows-registry = "0.5"
+
+[patch.crates-io]
+# MinGW build fix for whisper.cpp (docs/DECISIONS.md, D-001).
+whisper-rs-sys = { path = "third_party/whisper-rs-sys" }
+
+[profile.release]
+lto = "thin"
+strip = "debuginfo"

@@ -1,0 +1,38 @@
+[package]
+name = "callscribe-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "callscribe"
+path = "src/main.rs"
+
+[features]
+default = ["vulkan", "sherpa"]
+vulkan = ["callscribe-stt-whisper/vulkan"]
+cuda = ["callscribe-stt-whisper/cuda"]
+# GigaAM / Parakeet / diarization (D-006); needs third_party/sherpa-onnx-lib (scripts/fetch-sherpa.ps1).
+sherpa = ["dep:callscribe-stt-sherpa"]
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+tokio.workspace = true
+clap.workspace = true
+keyring.workspace = true
+callscribe-core.workspace = true
+callscribe-media.workspace = true
+callscribe-stt-whisper = { workspace = true, default-features = false }
+callscribe-stt-sherpa = { workspace = true, optional = true }
+callscribe-obs.workspace = true
+callscribe-platform.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
