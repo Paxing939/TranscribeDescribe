@@ -53,6 +53,18 @@ pub struct Utterance {
     pub text: String,
 }
 
+/// Typical Whisper hallucinations on silence (subtitle credits from its training data). Always applied,
+/// on top of `transcription.hallucination_blacklist`: a user config keeps its own copy of that list.
+const BUILTIN_BLACKLIST: &[&str] = &[
+    r"(?i)^(корректор|редактор)\s+[а-яё]\.\s*[а-яё]+[.!]*(\s+(корректор|редактор)\s+[а-яё]\.\s*[а-яё]+[.!]*)*$",
+    r"(?i)субтитр\w*\s+(сделал|создавал|делал|подготовил|подогнал|перевел|перевёл)",
+    r"(?i)dimatorzok",
+    r"(?i)^продолжение следует[.!…]*$",
+    r"(?i)^спасибо за (просмотр|внимание)[.!]*$",
+    r"(?i)^подпис\w+ на (наш )?канал",
+    r"(?i)^(редактор|корректор) субтитров",
+];
+
 /// Thresholds for the no-speech filter; the same defaults as Whisper uses internally.
 pub const NO_SPEECH_THOLD: f32 = 0.6;
 pub const LOGPROB_THOLD: f32 = -1.0;
@@ -66,10 +78,11 @@ pub struct PostProcessor {
 impl PostProcessor {
     pub fn new(cfg: &Transcription) -> anyhow::Result<Self> {
         Ok(PostProcessor {
-            blacklist: cfg
-                .hallucination_blacklist
+            blacklist: BUILTIN_BLACKLIST
                 .iter()
-                .map(|r| Regex::new(r))
+                .copied()
+                .chain(cfg.hallucination_blacklist.iter().map(String::as_str))
+                .map(Regex::new)
                 .collect::<Result<_, _>>()?,
             echo: cfg.echo_dedupe.clone(),
             merge_gap: cfg.merge_gap_sec,
@@ -385,6 +398,21 @@ mod tests {
         assert_eq!(v[1].dropped.as_deref(), Some("echo"));
         assert_eq!(v[2].dropped, None);
         assert_eq!(v[3].dropped, None);
+    }
+
+    #[test]
+    fn builtin_blacklist_catches_subtitle_credits() {
+        let mut v = vec![
+            seg(0.0, 1.0, Speaker::Remote, "Корректор А.Кулакова"),
+            seg(1.0, 2.0, Speaker::Remote, "Корректор А.Кулакова Корректор А.Кулакова Корректор А.Кулакова"),
+            seg(2.0, 3.0, Speaker::Me, "Корректор А.Егорова"),
+            seg(3.0, 4.0, Speaker::Remote, "Корректор кода у нас Антон."),
+        ];
+        let mut cfg = Config::default().transcription;
+        cfg.hallucination_blacklist.clear();
+        PostProcessor::new(&cfg).unwrap().filter_hallucinations(&mut v);
+        let d: Vec<_> = v.iter().map(|s| s.dropped.as_deref()).collect();
+        assert_eq!(d, vec![Some("blacklist"), Some("blacklist"), Some("blacklist"), None]);
     }
 
     #[test]

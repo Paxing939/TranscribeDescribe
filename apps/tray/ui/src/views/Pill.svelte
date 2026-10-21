@@ -43,7 +43,7 @@
   .pill {
     width: 100%; height: 100%; display: flex; align-items: center; gap: 8px;
     padding: 0 10px; background: var(--bg); border: 1px solid var(--border);
-    border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,.15); overflow: hidden; white-space: nowrap;
+    border-radius: 12px; overflow: hidden; white-space: nowrap;
   }
   .pill.compact { justify-content: center; padding: 0; }
   .dot { width: 10px; height: 10px; border-radius: 50%; background: #e11d48; flex: none; animation: pulse 1.4s ease-in-out infinite; }

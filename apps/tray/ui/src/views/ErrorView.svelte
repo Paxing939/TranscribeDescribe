@@ -10,7 +10,7 @@
 <svelte:window onkeydown={onkey} />
 <div class="card">
   <button class="close" aria-label="Закрыть" onclick={() => action('dismiss')}>×</button>
-  <p class="title" style="color:var(--danger)">{data.title}</p>
+  <p class="title" style={data.info ? '' : 'color:var(--danger)'}>{data.title}</p>
   <div class="msg">{data.message}</div>
   <div class="row">
     {#each data.actions as a, i (a.id)}
@@ -20,5 +20,5 @@
 </div>
 
 <style>
-  .msg { overflow: auto; user-select: text; -webkit-user-select: text; }
+  .msg { overflow: auto; white-space: pre-line; user-select: text; -webkit-user-select: text; }
 </style>

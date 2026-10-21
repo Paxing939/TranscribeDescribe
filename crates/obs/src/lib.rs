@@ -13,7 +13,7 @@ pub mod levels;
 pub mod supervisor;
 pub mod ws_config;
 
-pub use client::{Inputs, ObsClient, ObsEvent, RecordStatus, StartedRecording, resolve_password};
+pub use client::{AudioDevice, describe_audio_devices, is_virtual_device, Inputs, ObsClient, ObsEvent, RecordStatus, StartedRecording, resolve_password};
 pub use launch::{connect_or_launch, launch_obs};
 pub use supervisor::{Backoff, ConnState, Supervisor};
 pub use ws_config::{WsConfig, read_websocket_config};

@@ -103,6 +103,9 @@ impl Overlays {
             .maximizable(false)
             .minimizable(false)
             .decorations(false)
+            // No Windows 11 frame/shadow and a transparent window: only the rounded card is visible.
+            .shadow(false)
+            .transparent(true)
             .always_on_top(true)
             .skip_taskbar(true)
             .focused(focus)

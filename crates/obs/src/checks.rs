@@ -2,6 +2,24 @@
 //! на выходе — русское описание проблемы или `None`.
 
 /// Маска дорожек по номерам 1..=6 (бит 0 = дорожка 1).
+#[cfg(test)]
+mod device_tests {
+    use crate::client::{AudioDevice, describe_audio_devices, is_virtual_device};
+
+    #[test]
+    fn virtual_default_mic_warns() {
+        assert!(is_virtual_device("Headset Microphone (Oculus Virtual Audio Device)"));
+        assert!(!is_virtual_device("Microphone (G435 Wireless Gaming Headset)"));
+        let devs = vec![
+            AudioDevice { role: "mic", input: "Mic/Aux".into(), device_id: "default".into(), label: Some("Default".into()), is_default: true },
+            AudioDevice { role: "desktop", input: "Desktop Audio".into(), device_id: "{x}".into(), label: Some("Headset Earphone (G435)".into()), is_default: false },
+        ];
+        let (report, warn) = describe_audio_devices(&devs, Some("Headset Microphone (Oculus Virtual Audio Device)"), None);
+        assert!(report[0].contains("Oculus") && report[1].contains("G435"));
+        assert_eq!(warn.len(), 1);
+    }
+}
+
 pub fn tracks_mask(tracks: &[u32]) -> u32 {
     tracks
         .iter()

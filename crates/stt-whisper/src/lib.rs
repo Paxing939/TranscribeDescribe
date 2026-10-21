@@ -100,6 +100,10 @@ impl Transcriber for WhisperTranscriber {
         params.set_n_threads(self.threads);
         params.set_language(opts.language.as_deref());
         params.set_no_context(true);
+        // `no_context` only clears the prompt at the start of `full()`; inside one long run every 30 s window
+        // is still conditioned on the previous text, so one hallucination («Корректор А.Кулакова») repeats
+        // for an hour. No past text at all = faster-whisper's condition_on_previous_text=False (D-011).
+        params.set_n_max_text_ctx(0);
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_special(false);

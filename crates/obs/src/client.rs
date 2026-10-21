@@ -69,6 +69,65 @@ pub struct Inputs {
     pub desktop: Option<String>,
 }
 
+/// Audio device of a global OBS input (see [`ObsClient::audio_devices`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioDevice {
+    /// `mic` | `desktop`.
+    pub role: &'static str,
+    pub input: String,
+    pub device_id: String,
+    /// Device name as OBS shows it, if known.
+    pub label: Option<String>,
+    pub is_default: bool,
+}
+
+/// Virtual / loopback devices that are almost never the microphone you talk into.
+pub fn is_virtual_device(name: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "virtual", "oculus", "steam streaming", "vb-audio", "cable", "voicemeeter", "obs-", "nvidia virtual",
+        "loopback", "stereo mix", "стерео микшер", "wave link", "sonar",
+    ];
+    let n = name.to_lowercase();
+    MARKERS.iter().any(|m| n.contains(m))
+}
+
+/// Human-readable report of the devices OBS records from, plus warnings.
+/// `default_capture` / `default_render` — Windows defaults (resolve «По умолчанию»).
+pub fn describe_audio_devices(
+    devs: &[AudioDevice],
+    default_capture: Option<&str>,
+    default_render: Option<&str>,
+) -> (Vec<String>, Vec<String>) {
+    let mut report = Vec::new();
+    let mut warnings = Vec::new();
+    for d in devs {
+        let what = if d.role == "mic" { "микрофон" } else { "звук системы" };
+        let actual = if d.is_default {
+            if d.role == "mic" { default_capture } else { default_render }.map(|s| format!("{s} (устройство Windows по умолчанию)"))
+        } else {
+            d.label.clone()
+        };
+        match &actual {
+            Some(a) => report.push(format!("«{}» ({what}): {a}", d.input)),
+            None => {
+                report.push(format!("«{}» ({what}): устройство не найдено ({})", d.input, d.device_id));
+                warnings.push(format!(
+                    "Устройство источника «{}» не найдено — возможно, оно отключено. Выберите его в OBS: Настройки → Аудио.",
+                    d.input
+                ));
+            }
+        }
+        if d.role == "mic" && actual.as_deref().is_some_and(is_virtual_device) {
+            warnings.push(format!(
+                "OBS пишет микрофон с виртуального устройства: {}. Ваш голос, скорее всего, не попадёт в запись. \
+                 Выберите настоящий микрофон в OBS: Настройки → Аудио → Mic/Aux.",
+                actual.unwrap_or_default()
+            ));
+        }
+    }
+    (report, warnings)
+}
+
 /// Что изменил `start_recording` — по этому `restore` возвращает всё назад.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StartedRecording {
@@ -339,21 +398,24 @@ impl ObsClient {
                 RecordMode::Audio => {
                     let profiles = c.profiles().list().await.context("GetProfileList")?;
                     if profiles.current != cfg.audio_profile {
-                        if !profiles.profiles.contains(&cfg.audio_profile) {
-                            bail!("профиль OBS «{}» не найден", cfg.audio_profile);
+                        if profiles.profiles.contains(&cfg.audio_profile) {
+                            st.prev_profile = Some(profiles.current);
+                            self.switch_profile(&cfg.audio_profile, false).await?;
+                        } else {
+                            // Better a recording with video than none: OBS is not set up yet.
+                            st.warning = Some(format!(
+                                "Профиля OBS «{}» нет — запись идёт в текущем профиле (со звуком и видео). \
+                                 Настройте OBS: callscribe obs-setup.",
+                                cfg.audio_profile
+                            ));
                         }
-                        st.prev_profile = Some(profiles.current);
-                        self.switch_profile(&cfg.audio_profile, false).await?;
                     }
                 }
                 RecordMode::Screen => {
                     let name = usize::try_from(screen)
                         .ok()
                         .and_then(|n| n.checked_sub(1))
-                        .and_then(|i| cfg.screen_scenes.get(i))
-                        .with_context(|| {
-                            format!("для экрана {screen} не задана сцена OBS (obs.screen_scenes)")
-                        })?;
+                        .and_then(|i| cfg.screen_scenes.get(i));
                     let current = c
                         .scenes()
                         .current_program_scene()
@@ -361,12 +423,25 @@ impl ObsClient {
                         .context("GetCurrentProgramScene")?
                         .id
                         .name;
-                    if &current != name {
-                        c.scenes()
-                            .set_current_program_scene(name.as_str())
-                            .await
-                            .with_context(|| format!("сцена OBS «{name}» не найдена"))?;
-                        st.prev_scene = Some(current);
+                    match name {
+                        Some(name) if &current != name => {
+                            match c.scenes().set_current_program_scene(name.as_str()).await {
+                                Ok(()) => st.prev_scene = Some(current),
+                                Err(e) => {
+                                    tracing::warn!("сцена OBS «{name}»: {e}");
+                                    st.warning = Some(format!(
+                                        "Сцены OBS «{name}» нет — пишется текущая сцена «{current}». \
+                                         Настройте OBS: callscribe obs-setup."
+                                    ));
+                                }
+                            }
+                        }
+                        Some(_) => {}
+                        None => {
+                            st.warning = Some(format!(
+                                "Для экрана {screen} не задана сцена OBS (obs.screen_scenes) — пишется текущая сцена «{current}»."
+                            ));
+                        }
                     }
                 }
             }
@@ -557,6 +632,38 @@ impl ObsClient {
         resolve_inputs(&self.inner.client, &self.inner.cfg).await
     }
 
+    /// Which audio devices the mic and desktop inputs use (`device_id` + its label in OBS).
+    /// `is_default` — «По умолчанию»: the real device is the Windows default, which the caller resolves.
+    pub async fn audio_devices(&self) -> Result<Vec<AudioDevice>> {
+        let c = &self.inner.client;
+        let inputs = self.special_inputs().await?;
+        let mut out = Vec::new();
+        for (role, name) in [("mic", inputs.mic), ("desktop", inputs.desktop)] {
+            let Some(name) = name else { continue };
+            let settings = c
+                .inputs()
+                .settings::<serde_json::Value>(name.as_str().into())
+                .await
+                .with_context(|| format!("GetInputSettings «{name}»"))?;
+            let id = settings.settings["device_id"].as_str().unwrap_or("default").to_string();
+            let label = c
+                .inputs()
+                .properties_list_property_items(name.as_str().into(), "device_id")
+                .await
+                .ok()
+                .and_then(|items| items.into_iter().find(|i| i.value.as_str() == Some(id.as_str())))
+                .map(|i| i.name);
+            out.push(AudioDevice {
+                role,
+                input: name,
+                is_default: id == "default" || id.is_empty(),
+                device_id: id,
+                label,
+            });
+        }
+        Ok(out)
+    }
+
     pub(crate) async fn param(
         &self,
         category: &str,
@@ -644,6 +751,12 @@ impl ObsClient {
                         out.push(format!(
                             "Сцена OBS «{want}» не найдена (создайте по §14 README)."
                         ));
+                    } else if let Ok(misfits) = self.capture_misfits(want).await {
+                        for (_, src) in misfits {
+                            out.push(format!(
+                                "В сцене «{want}» захват «{src}» не вписан в холст — в записи будет обрезанный экран."
+                            ));
+                        }
                     }
                 }
             }

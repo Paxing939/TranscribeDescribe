@@ -130,6 +130,13 @@ pub struct Controller {
     /// The tray icon shows the error state until then (F-02).
     error_until: Option<Instant>,
     last_remote_check: Option<Instant>,
+    obs_hint_shown: bool,
+    t0_obs: Instant,
+    mic_heard: bool,
+    remote_heard_secs: u32,
+    mic_warned: bool,
+    device_warned: bool,
+    mic_device: Option<String>,
 }
 
 fn now_ms() -> u64 {
@@ -217,6 +224,13 @@ impl Controller {
             status_item: None,
             error_until: None,
             last_remote_check: None,
+            obs_hint_shown: false,
+            t0_obs: Instant::now(),
+            mic_heard: false,
+            remote_heard_secs: 0,
+            mic_warned: false,
+            device_warned: false,
+            mic_device: None,
         })
     }
 
@@ -309,6 +323,23 @@ impl Controller {
         {
             self.adopted_checked = true;
             self.adopt_running_recording(&c).await;
+            self.check_audio_devices(&c).await;
+            // F-27: OBS not set up → offer the auto-fix right away, not at the first call.
+            let problems = c.check_settings(&self.cfg.obs).await;
+            if !problems.is_empty() {
+                let list: Vec<String> = problems.iter().take(4).map(|p| format!("• {p}")).collect();
+                self.error(
+                    "OBS не настроен для записи звонков",
+                    &list.join("\n"),
+                    &[("fix_obs", "Настроить OBS"), ("logs", "Открыть логи")],
+                );
+            }
+        }
+
+        // OBS still not connected: explain why once (wrong password, server off).
+        if !self.obs_hint_shown && self.obs.client().is_none() && self.t0_obs.elapsed() > Duration::from_secs(15) {
+            self.obs_hint_shown = true;
+            self.explain_obs_failure().await;
         }
 
         // Name dialog timeout (F-43).
@@ -509,13 +540,19 @@ impl Controller {
         {
             Ok(started) => {
                 if let Some(w) = &started.warning {
-                    self.error("Запись идёт с ограничением", w, &[]);
+                    self.error("Запись идёт с ограничением", w, &[("fix_obs", "Настроить OBS")]);
                 }
                 let _ = client.set_levels_enabled(true).await;
                 let _ = self.db.set_recording_active(true);
                 self.last_heartbeat = Instant::now();
                 self.silence.reset(self.now());
                 self.webcam_seen = false;
+                // Mic watchdog for this recording.
+                self.mic_heard = false;
+                self.remote_heard_secs = 0;
+                self.mic_warned = false;
+                self.device_warned = false;
+                self.mic_device = self.check_audio_devices(&client).await;
                 let rec = ActiveRec {
                     session: session.clone(),
                     started_wall: local_now(),
@@ -684,11 +721,19 @@ impl Controller {
             // A second recording before the first was named: queue the first as is.
             self.finalize_pending(None);
         }
+        // «Не отправлять в облако» at the end of the call too (F-71): only when the summary would go to a cloud LLM.
+        let cloud = self.cfg.llm.provider != LlmProviderKind::None
+            && self.cfg.llm.allow_cloud
+            && llm::is_cloud_endpoint(&self.cfg.llm.primary());
+        let provider = self.cfg.llm.base_url.split("//").nth(1).unwrap_or("").split(['/', ':']).next().unwrap_or("").to_string();
         self.overlays.show(
             "naming",
             "naming",
-            json!({"view": "naming", "deadlineMs": now_ms() + 60_000}),
-            (380.0, 120.0),
+            json!({
+                "view": "naming", "deadlineMs": now_ms() + 60_000,
+                "showCloudToggle": cloud, "cloudAllowed": info.cloud_allowed, "provider": provider
+            }),
+            (380.0, if cloud { 146.0 } else { 120.0 }),
             true,
         );
         self.pending = Some(PendingCall {
@@ -844,6 +889,7 @@ impl Controller {
     async fn on_obs(&mut self, e: ObsEvent) {
         match e {
             ObsEvent::Levels { mic_db, desktop_db } => {
+                self.mic_watchdog(mic_db, desktop_db);
                 if matches!(self.sm.state, State::Recording(_))
                     && self.silence.update(&[mic_db, desktop_db], self.now())
                 {
@@ -1001,6 +1047,114 @@ impl Controller {
         self.show_pill();
     }
 
+    /// The other side has been audible for 2 minutes, the mic track stayed silent → OBS records the wrong mic.
+    fn mic_watchdog(&mut self, mic_db: f64, desktop_db: f64) {
+        if self.rec.is_none() || self.mic_warned || self.mic_heard {
+            return;
+        }
+        let thr = self.cfg.detection.silence_threshold_db;
+        if mic_db > thr {
+            self.mic_heard = true;
+            return;
+        }
+        if desktop_db > thr {
+            self.remote_heard_secs += 1;
+        }
+        if self.remote_heard_secs >= 120 {
+            self.mic_warned = true;
+            let dev = self.mic_device.clone().unwrap_or_else(|| "не удалось определить".into());
+            self.error(
+                "OBS не слышит ваш микрофон",
+                &format!(
+                    "Собеседника слышно уже 2 минуты, а на дорожке микрофона тишина.\n{dev}\nВыберите в OBS микрофон, в который говорите: Настройки → Аудио → Mic/Aux."
+                ),
+                &[("logs", "Открыть логи")],
+            );
+        }
+    }
+
+    /// Warn when OBS records the mic from a virtual / missing device. Returns the mic device for messages.
+    async fn check_audio_devices(&mut self, c: &callscribe_obs::ObsClient) -> Option<String> {
+        let devs = c.audio_devices().await.ok()?;
+        let def = tokio::task::spawn_blocking(callscribe_platform::default_audio_devices)
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default();
+        let (report, warnings) =
+            callscribe_obs::describe_audio_devices(&devs, def.capture.as_deref(), def.render.as_deref());
+        for r in &report {
+            tracing::info!("звук OBS: {r}");
+        }
+        if !warnings.is_empty() && !self.device_warned {
+            self.device_warned = true;
+            self.error("Проверьте микрофон в OBS", &warnings.join("\n"), &[("logs", "Открыть логи")]);
+        }
+        report.into_iter().find(|r| r.contains("(микрофон)"))
+    }
+
+    async fn explain_obs_failure(&mut self) {
+        let r = tokio::time::timeout(
+            Duration::from_secs(6),
+            callscribe_obs::ObsClient::connect(&self.cfg.obs, obs_secret(&self.cfg)),
+        )
+        .await;
+        let msg = match r {
+            Ok(Ok(_)) | Err(_) => return,
+            Ok(Err(e)) => format!("{e:#}"),
+        };
+        tracing::warn!("OBS: {msg}");
+        if msg.contains("Authentication failed") {
+            self.error(
+                "Неверный пароль OBS WebSocket",
+                "В OBS: Инструменты → Настройки сервера WebSocket → «Показать данные подключения» — скопируйте пароль.\nЗатем в CallScribe: Настройки → OBS → «свой, в хранилище Windows» и вставьте пароль.",
+                &[("open_settings", "Открыть настройки")],
+            );
+        } else if msg.contains("refused") || msg.contains("10061") {
+            self.error(
+                "OBS не принимает подключения",
+                "Запустите OBS и включите сервер: Инструменты → Настройки сервера WebSocket → «Включить сервер WebSocket», порт 4455.",
+                &[("retry_obs", "Запустить OBS")],
+            );
+        } else {
+            self.error("OBS недоступен", &msg, &[("logs", "Открыть логи")]);
+        }
+    }
+
+    /// F-27 «Исправить»: bring OBS to the expected state (tracks, scenes, audio profile).
+    async fn fix_obs(&mut self) {
+        let Some(c) = self.obs.client() else {
+            self.error("OBS недоступен", "Запустите OBS и включите сервер WebSocket (Инструменты → Настройки сервера WebSocket).", &[]);
+            return;
+        };
+        if self.rec.is_some() {
+            self.error("Идёт запись", "Настроить OBS можно после остановки записи.", &[]);
+            return;
+        }
+        match c.fix_settings(&self.cfg.obs).await {
+            Ok(changes) => {
+                let rest = c.check_settings(&self.cfg.obs).await;
+                let mut msg: Vec<String> = changes.iter().take(6).map(|s| format!("• {s}")).collect();
+                if changes.is_empty() {
+                    msg.push("Менять ничего не пришлось.".into());
+                }
+                if !rest.is_empty() {
+                    msg.push(format!("Осталось: {}", rest.join("; ")));
+                }
+                tracing::info!("OBS настроен: {changes:?}; осталось: {rest:?}");
+                self.overlays_info("OBS настроен", &msg.join("\n"));
+            }
+            Err(e) => self.error("Не удалось настроить OBS", &format!("{e:#}"), &[("logs", "Открыть логи")]),
+        }
+    }
+
+    /// An informational card (same view as errors, without the error state).
+    fn overlays_info(&mut self, title: &str, message: &str) {
+        self.errors_seq += 1;
+        let label = format!("error-{}", self.errors_seq);
+        self.overlays.show(&label, "error", json!({"view": "error", "title": title, "message": message, "actions": [], "info": true}), (400.0, Self::card_height(message)), false);
+    }
+
     fn bookmark(&mut self) {
         if let Some(r) = self.rec.as_mut() {
             let at = r.elapsed_in_file();
@@ -1078,6 +1232,12 @@ impl Controller {
                 self.silence.reset(self.now());
                 self.dispatch(Event::UserContinue).await
             }
+            ("naming", "cloud") => {
+                if let Some(p) = self.pending.as_mut() {
+                    p.rec_meta.cloud_allowed = value["allowed"].as_bool().unwrap_or(true);
+                    tracing::info!("облако для звонка: {}", p.rec_meta.cloud_allowed);
+                }
+            }
             ("naming", "submit") => {
                 self.overlays.close("naming");
                 let t = value["title"]
@@ -1115,6 +1275,8 @@ impl Controller {
                     "retry_obs" => {
                         let _ = callscribe_obs::launch_obs(&self.cfg.obs);
                     }
+                    "fix_obs" => self.fix_obs().await,
+                    "open_settings" => crate::settings::open_window(&self.app),
                     "retry_job" => {
                         let _ = self.db.retry_now();
                         self.check_queue();
@@ -1320,6 +1482,12 @@ impl Controller {
 
     // ---------------------------------------------------------------- misc
 
+    /// Card height for a message: ~55 characters per line at 400 px.
+    fn card_height(message: &str) -> f64 {
+        let lines: usize = message.lines().map(|l| l.chars().count() / 55 + 1).sum();
+        (100.0 + 19.0 * lines.clamp(1, 10) as f64).min(320.0)
+    }
+
     fn error(&mut self, title: &str, message: &str, actions: &[(&str, &str)]) {
         self.errors_seq += 1;
         self.error_until = Some(Instant::now() + Duration::from_secs(120));
@@ -1333,7 +1501,7 @@ impl Controller {
             &label,
             "error",
             json!({"view": "error", "title": title, "message": message, "actions": acts}),
-            (380.0, 120.0),
+            (400.0, Self::card_height(message)),
             false,
         );
         crate::spawn::toast(&self.app, title, message);
@@ -1358,7 +1526,17 @@ impl Controller {
                 *self.overlays.position.lock().unwrap() = cfg.overlay.position.clone();
                 *self.overlays.exclude_from_capture.lock().unwrap() =
                     cfg.overlay.exclude_from_capture;
+                // OBS connection settings changed (password, port…) → reconnect with them.
+                let obs_changed = format!("{:?}", self.cfg.obs) != format!("{:?}", cfg.obs);
                 self.cfg = cfg;
+                if obs_changed && self.rec.is_none() {
+                    tracing::info!("настройки OBS изменились — переподключаюсь");
+                    self.obs.stop();
+                    self.obs = Supervisor::spawn(self.cfg.obs.clone(), obs_secret(&self.cfg), Duration::from_secs(30));
+                    self.adopted_checked = false;
+                    self.obs_hint_shown = false;
+                    self.t0_obs = Instant::now();
+                }
                 tracing::info!("настройки перечитаны");
             }
             Err(e) => self.error("Ошибка в config.toml", &format!("{e:#}"), &[]),

@@ -46,3 +46,9 @@ fn smoke_misc() {
         RegistryAutostart.is_enabled().unwrap()
     );
 }
+
+#[test]
+#[ignore = "prints the default audio devices of this machine"]
+fn smoke_default_devices() {
+    println!("{:?}", callscribe_platform::default_audio_devices().unwrap());
+}

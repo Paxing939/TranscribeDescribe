@@ -262,6 +262,24 @@ pub async fn obs_checks(cfg: &Config) -> Vec<Check> {
                     v.push(warn("настройки OBS", p));
                 }
             }
+            // Which devices OBS actually records from («По умолчанию» → Windows default).
+            match c.audio_devices().await {
+                Ok(devs) => {
+                    let def = callscribe_platform::default_audio_devices().unwrap_or_default();
+                    let (report, warnings) = callscribe_obs::describe_audio_devices(
+                        &devs,
+                        def.capture.as_deref(),
+                        def.render.as_deref(),
+                    );
+                    for r in report {
+                        v.push(ok("звук OBS", r));
+                    }
+                    for w in warnings {
+                        v.push(warn("звук OBS", w));
+                    }
+                }
+                Err(e) => v.push(warn("звук OBS", format!("не удалось узнать устройства: {e:#}"))),
+            }
         }
         Ok(Err(e)) => v.push(warn(
             "OBS",

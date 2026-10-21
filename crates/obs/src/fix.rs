@@ -192,6 +192,67 @@ impl ObsClient {
             if !has_capture {
                 self.add_monitor_capture(name, i, changes).await?;
             }
+            self.fit_captures_to_canvas(name, changes).await?;
+        }
+        Ok(())
+    }
+
+    /// Захват монитора в натуральную величину больше холста (2560×1440 на 1920×1080) —
+    /// в записи видна только часть экрана. Вписываем источник в холст («Растянуть по размеру экрана»).
+    pub(crate) async fn capture_misfits(&self, scene: &str) -> Result<Vec<(i64, String)>> {
+        let c = &self.inner.client;
+        let video = c.config().video_settings().await.context("GetVideoSettings")?;
+        let (w, h) = (video.base_width as f32, video.base_height as f32);
+        let mut out = Vec::new();
+        for it in c.scene_items().list(scene.into()).await? {
+            let is_capture = it
+                .input_kind
+                .as_deref()
+                .is_some_and(|k| CAPTURE_KINDS.iter().any(|ck| k.starts_with(ck)));
+            if !is_capture {
+                continue;
+            }
+            let t = c.scene_items().transform(scene.into(), it.id).await?;
+            let fitted = t.bounds_type != obws::common::BoundsType::None
+                && (t.bounds_width - w).abs() < 1.0
+                && (t.bounds_height - h).abs() < 1.0
+                && t.position_x.abs() < 1.0
+                && t.position_y.abs() < 1.0;
+            if !fitted {
+                out.push((it.id, it.source_name.clone()));
+            }
+        }
+        Ok(out)
+    }
+
+    async fn fit_captures_to_canvas(&self, scene: &str, changes: &mut Vec<String>) -> Result<()> {
+        use obws::common::{Alignment, BoundsType};
+        use obws::requests::scene_items::{Bounds, Position, SceneItemTransform, SetTransform};
+        let c = &self.inner.client;
+        let video = c.config().video_settings().await.context("GetVideoSettings")?;
+        for (id, name) in self.capture_misfits(scene).await? {
+            c.scene_items()
+                .set_transform(SetTransform {
+                    scene: scene.into(),
+                    item_id: id,
+                    transform: SceneItemTransform {
+                        position: Some(Position { x: Some(0.0), y: Some(0.0) }),
+                        alignment: Some(Alignment::TOP | Alignment::LEFT),
+                        bounds: Some(Bounds {
+                            r#type: Some(BoundsType::ScaleInner),
+                            alignment: Some(Alignment::CENTER),
+                            width: Some(video.base_width as f32),
+                            height: Some(video.base_height as f32),
+                        }),
+                        ..Default::default()
+                    },
+                })
+                .await
+                .with_context(|| format!("SetSceneItemTransform «{name}»"))?;
+            changes.push(format!(
+                "В сцене «{scene}» источник «{name}» вписан в холст {}×{}",
+                video.base_width, video.base_height
+            ));
         }
         Ok(())
     }

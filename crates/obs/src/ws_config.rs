@@ -31,6 +31,17 @@ pub fn parse_ws_config(json: &str) -> Result<WsConfig> {
     serde_json::from_str(json).context("некорректный config.json obs-websocket")
 }
 
+#[cfg(test)]
+mod ini_tests {
+    #[test]
+    fn ini_section() {
+        let c = super::parse_ini_section("[General]\nX=1\n[OBSWebSocket]\nServerEnabled=true\nServerPort=4456\nAuthRequired=true\nServerPassword=abc\n").unwrap();
+        assert!(c.server_enabled && c.auth_required);
+        assert_eq!((c.server_port, c.server_password.as_str()), (4456, "abc"));
+        assert!(super::parse_ini_section("[General]\nX=1\n").is_none());
+    }
+}
+
 /// Путь к конфигу obs-websocket для текущей ОС.
 pub fn ws_config_path() -> Option<PathBuf> {
     #[cfg(windows)]
@@ -46,9 +57,46 @@ pub fn ws_config_path() -> Option<PathBuf> {
     )
 }
 
+/// Секция `[OBSWebSocket]` в `user.ini` / `global.ini` (в новых OBS настройки могут храниться там).
+pub fn parse_ini_section(ini: &str) -> Option<WsConfig> {
+    let mut in_sec = false;
+    let mut found = false;
+    let mut c = WsConfig { server_enabled: false, server_port: 4455, server_password: String::new(), auth_required: true };
+    for line in ini.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_sec = line.eq_ignore_ascii_case("[OBSWebSocket]");
+            continue;
+        }
+        if !in_sec {
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let truthy = |v: &str| matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1");
+        match k.trim() {
+            "ServerEnabled" => c.server_enabled = truthy(v),
+            "ServerPort" => c.server_port = v.trim().parse().unwrap_or(4455),
+            "AuthRequired" => c.auth_required = truthy(v),
+            "ServerPassword" => {
+                c.server_password = v.trim().to_string();
+                found = true;
+            }
+            _ => {}
+        }
+    }
+    found.then_some(c)
+}
+
 /// Прочитать конфиг obs-websocket; `None`, если файла нет или он не разбирается.
+/// Сначала ini-файлы OBS (секция `[OBSWebSocket]`), затем `plugin_config/obs-websocket/config.json`.
 pub fn read_websocket_config() -> Option<WsConfig> {
     let path = ws_config_path()?;
+    if let Some(base) = path.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+        for ini in ["user.ini", "global.ini"] {
+            if let Some(c) = std::fs::read_to_string(base.join(ini)).ok().as_deref().and_then(parse_ini_section) {
+                return Some(c);
+            }
+        }
+    }
     let text = std::fs::read_to_string(&path).ok()?;
     match parse_ws_config(&text) {
         Ok(c) => Some(c),

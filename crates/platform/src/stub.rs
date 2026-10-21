@@ -62,3 +62,13 @@ pub fn free_space_bytes(_path: &Path) -> Result<u64> {
 pub fn computer_name() -> String {
     std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into())
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DefaultAudioDevices {
+    pub capture: Option<String>,
+    pub render: Option<String>,
+}
+
+pub fn default_audio_devices() -> Result<DefaultAudioDevices> {
+    Ok(DefaultAudioDevices::default())
+}

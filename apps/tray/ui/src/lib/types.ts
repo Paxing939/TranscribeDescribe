@@ -9,10 +9,10 @@ export type PillData = {
   pauseStartedMs?: number; style: 'full' | 'dot';
 };
 export type EndData = { view: 'end'; reason: 'signal_lost' | 'silence' | 'max_duration'; deadlineMs: number };
-export type NamingData = { view: 'naming'; deadlineMs: number };
+export type NamingData = { view: 'naming'; deadlineMs: number; showCloudToggle?: boolean; cloudAllowed?: boolean; provider?: string };
 export type DoneData = { view: 'done'; title: string | null; autoApplyMs: number | null; hasSummary: boolean };
 export type ErrorData = {
-  view: 'error'; title: string; message: string; actions: { id: string; label: string }[];
+  view: 'error'; title: string; message: string; info?: boolean; actions: { id: string; label: string }[];
 };
 export type ShortData = { view: 'short'; durationSec: number };
 
